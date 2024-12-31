@@ -4,7 +4,10 @@ import torch.nn.functional as F
 
 from .encoding import get_encoder
 from .renderer import NeRFRenderer
-
+import sys
+from sklearn.decomposition import PCA
+from sklearn.preprocessing import LabelEncoder
+from .deformation_nw import AudioFeatureDeformationModel
 
 class Conv2d(nn.Module):
     def __init__(self, cin, cout, kernel_size, stride, padding, residual=False, leakyReLU=False, *args, **kwargs):
@@ -113,6 +116,18 @@ class AudioNet(nn.Module):
         x = x[:, :, 8-half_w:8+half_w]
         x = self.encoder_conv(x).squeeze(-1)
         x = self.encoder_fc1(x)
+        return x
+    
+    def pad_x(self, x):
+        # linear_proj = nn.Linear(10112, 2048)
+
+        # Forward pass
+        x = self.linear_proj(x)  # shape: [8, 2048]
+
+        # Reshape to [8, 1024, 2]
+        x = x.view(x.size(0), 1024, 2)
+
+
         return x
 
 
@@ -246,6 +261,28 @@ class NeRFNetwork(NeRFRenderer):
             self.torso_encoder, self.torso_in_dim = get_encoder('tiledgrid', input_dim=2, num_levels=16, level_dim=2, base_resolution=16, log2_hashmap_size=16, desired_resolution=2048)
             self.torso_net = MLP(self.torso_in_dim + self.torso_deform_in_dim + self.anchor_in_dim + self.individual_dim_torso, 4, 32, 3)
 
+        # self.label_encoder = LabelEncoder()
+        # self.emotions = ['angry', 'disgust', 'contempt', 'fear', 'happy', 'sad', 'surprise', 'neutral']
+        # self.label_encoder.fit(self.emotions)
+        # self.deform_nw = self.build_deform_model(ckpt_path='/home/wenqing/projs/fg_proj/SyncTalk/model/deformation_ave/400000epoches/checkpoints/epoch_ckpt_deformation_4996096.pth',
+        # num_feats=512, T=1)
+
+    def build_deform_model(self, ckpt_path, num_feats, T):
+        """
+        Build AudioFeatureDeformationModel. The dimension => max_T * n_components.
+        """
+        audio_feature_dim = T * num_feats
+        num_emotions = 8  # or get from dataset label_encoder
+        model = AudioFeatureDeformationModel(
+            audio_feature_dim=audio_feature_dim,
+            num_emotions=num_emotions,
+            emotion_embedding_dim=16,
+            hidden_dim=256
+        ).to('cuda')
+        checkpoint = torch.load(ckpt_path, map_location='cuda')
+
+        model.load_state_dict(checkpoint["model"])
+        return model
 
     def forward_torso(self, x, poses, c=None):
         # x: [N, 2] in [-1, 1]
@@ -314,11 +351,24 @@ class NeRFNetwork(NeRFRenderer):
             a = self.embedding(a).transpose(-1, -2).contiguous() # [1/8, 29, 16]
 
         enc_a = self.audio_net(a) # [8,32]
+        # emo_id_arr = self.label_encoder.transform(['happy'])  # Shape: (1,)
+        # emo_feat  = torch.tensor(emo_id_arr[0], dtype=torch.long).to('cuda').unsqueeze(0).expand(8).unsqueeze(0)
+
+        # # print(f'auds {emo_feat.shape}')
+        # # sys.exit()
+
+        # enc_a = self.cal_cond_feat(enc_a, emo_feat)
 
         if self.att > 0:
             enc_a = self.audio_att_net(enc_a.unsqueeze(0)) # [1, 32]
             
         return enc_a
+    
+    def cal_cond_feat(self, cond_feat, emo_feat):
+        emo_dim = emo_feat.shape[1]
+        cond_feat[..., :emo_dim] = cond_feat[..., :emo_dim] + emo_feat.expand(cond_feat[..., :emo_dim].shape)
+        return cond_feat
+
 
     
     def predict_uncertainty(self, unc_inp):

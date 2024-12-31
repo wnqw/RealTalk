@@ -74,6 +74,8 @@ import numpy as np
 import torch
 from argparse import ArgumentParser
 import librosa
+from tqdm import tqdm
+import os 
 
 parser = ArgumentParser()
 parser.add_argument('--wav', type=str, help='')
@@ -90,3 +92,35 @@ hubert_hidden = get_hubert_from_16k_speech(speech_16k)
 hubert_hidden = make_even_first_dim(hubert_hidden).reshape(-1, 2, 1024)
 np.save(wav_name.replace('.wav', '_hu.npy'), hubert_hidden.detach().numpy())
 print(hubert_hidden.detach().numpy().shape)
+
+def process_wav(wav_path):
+    try:
+        print(f"Processing {wav_path}...")
+        speech, sr = sf.read(wav_path)
+        speech_16k = librosa.resample(speech, orig_sr=sr, target_sr=16000)
+        print("SR: {} to {}".format(sr, 16000))
+
+        hubert_hidden = get_hubert_from_16k_speech(speech_16k)
+        hubert_hidden = make_even_first_dim(hubert_hidden).reshape(-1, 2, 1024)
+        np.save(wav_path.replace('.wav', '_hu.npy'), hubert_hidden.detach().numpy())
+        print(hubert_hidden.detach().numpy().shape)
+    except Exception as e:
+        print(f"Error processing {wav_path}: {e}")
+
+if __name__ == "__main__":
+    parser = ArgumentParser()
+    parser.add_argument('--root', type=str, help='Root folder containing .wav files', required=True)
+    args = parser.parse_args()
+
+    root_folder = args.root
+    wav_files = []
+
+    # Gather all .wav files in the folder and its subfolders
+    for subdir, _, files in os.walk(root_folder):
+        for file in files:
+            if file.endswith('.wav'):
+                wav_files.append(os.path.join(subdir, file))
+
+    # Process .wav files with a progress bar
+    for wav_path in tqdm(wav_files, desc="Processing WAV files"):
+        process_wav(wav_path)

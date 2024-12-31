@@ -25,6 +25,10 @@ from torch_ema import ExponentialMovingAverage
 from packaging import version as pver
 import imageio
 import lpips
+# from deformation_nw import AudioFeatureDeformationModel
+from .deformation_nw import AudioFeatureDeformationModel
+import sys
+from sklearn.preprocessing import LabelEncoder
 
 def custom_meshgrid(*args):
     # ref: https://pytorch.org/docs/stable/generated/torch.meshgrid.html?highlight=meshgrid#torch.meshgrid
@@ -78,6 +82,72 @@ def get_audio_features(features, att_mode, index):
         return auds
     else:
         raise NotImplementedError(f'wrong att_mode: {att_mode}')
+
+# def get_audio_features(features, att_mode, index):
+#     # features has shape [N, 1024, 2]
+#     # we want to return shape [64, 1024, 2]
+#     # i.e. 64 consecutive frames around `index`, with padding if needed.
+
+#     if att_mode == 0:
+#         # e.g. return single frame at [index], shape -> [1, 1024, 2]
+#         return features[[index]]
+
+#     elif att_mode == 1:
+#         # older code snippet, remain unchanged if you like
+#         left = index - 8
+#         pad_left = 0
+#         if left < 0:
+#             pad_left = -left
+#             left = 0
+#         auds = features[left:index]
+#         if pad_left > 0:
+#             auds = torch.cat([
+#                 torch.zeros(pad_left, *auds.shape[1:],
+#                             device=auds.device, dtype=auds.dtype),
+#                 auds
+#             ], dim=0)
+#         return auds
+
+#     elif att_mode == 2:
+#         # NEW: we want 64 frames total => 32 frames before + 32 frames after
+#         left = index - 32
+#         right = index + 32
+#         pad_left = 0
+#         pad_right = 0
+
+#         # 1) clamp left
+#         if left < 0:
+#             pad_left = -left  # e.g.  left= -5 => pad_left=5
+#             left = 0
+#         # 2) clamp right
+#         if right > features.shape[0]:
+#             pad_right = right - features.shape[0]
+#             right = features.shape[0]
+
+#         # slice => shape may be < 64 if out-of-bounds
+#         auds = features[left:right]  # shape e.g. [some_len, 1024, 2]
+
+#         # 3) pad if needed
+#         if pad_left > 0:
+#             # create zeros for the left
+#             left_pad = torch.zeros(
+#                 pad_left, *auds.shape[1:],
+#                 device=auds.device, dtype=auds.dtype
+#             )
+#             auds = torch.cat([left_pad, auds], dim=0)
+#         if pad_right > 0:
+#             # create zeros for the right
+#             right_pad = torch.zeros(
+#                 pad_right, *auds.shape[1:],
+#                 device=auds.device, dtype=auds.dtype
+#             )
+#             auds = torch.cat([auds, right_pad], dim=0)
+
+#         # now auds should be exactly [64, 1024, 2]
+#         return auds
+
+#     else:
+#         raise NotImplementedError(f'wrong att_mode: {att_mode}')
 
 
 @torch.jit.script
@@ -664,6 +734,13 @@ class Trainer(object):
         self.device = device if device is not None else torch.device(f'cuda:{local_rank}' if torch.cuda.is_available() else 'cpu')
         self.console = Console()
 
+        self.deform_nw = self.build_deform_model(ckpt_path='/home/wenqing/projs/fg_proj/SyncTalk/model/deformation_ave/newset/checkpoints/latest.pth',
+        num_feats=512, T=1)
+        self.label_encoder = LabelEncoder()
+        self.emotions = ['angry', 'disgust', 'contempt', 'fear', 'happy', 'sad', 'surprise', 'neutral']
+        self.label_encoder.fit(self.emotions)
+
+
         model.to(self.device)
         if self.world_size > 1:
             model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
@@ -750,6 +827,22 @@ class Trainer(object):
     def __del__(self):
         if self.log_ptr: 
             self.log_ptr.close()
+    
+    def build_deform_model(self, ckpt_path, num_feats, T):
+        """
+        Build AudioFeatureDeformationModel. The dimension => max_T * n_components.
+        """
+        audio_feature_dim = T * num_feats
+        num_emotions = 8  # or get from dataset label_encoder
+        model = AudioFeatureDeformationModel(
+            audio_feature_dim=audio_feature_dim,
+            num_emotions=num_emotions,
+            emotion_embedding_dim=16,
+            hidden_dim=256
+        ).to(self.device)
+        checkpoint = torch.load(ckpt_path, map_location=self.device)
+        model.load_state_dict(checkpoint["model_state_dict"])
+        return model
 
 
     def log(self, *args, **kwargs):
@@ -962,7 +1055,7 @@ class Trainer(object):
         bg_coords = data['bg_coords'] # [1, N, 2]
         poses = data['poses'] # [B, 7]
 
-        auds = data['auds'] # [B, 29, 16]
+        auds = data['auds'] # [8,1,512] , [B, 29, 16]
         index = data['index']
         H, W = data['H'], data['W']
 
@@ -977,7 +1070,7 @@ class Trainer(object):
         else:
             bg_color = data['bg_color']
 
-        self.model.testing = True
+        self.model.testing = True        
         outputs = self.model.render(rays_o, rays_d, auds, bg_coords, poses, eye=eye, index=index, staged=True, bg_color=bg_color, perturb=perturb, **vars(self.opt))
         self.model.testing = False
 
@@ -1052,6 +1145,9 @@ class Trainer(object):
         os.makedirs(save_path, exist_ok=True)
         
         self.log(f"==> Start Test, save results to {save_path}")
+
+        # print(f'batch_size {loader.batch_size},len(loader) {len(loader)}') # size_eachbatch 1, n_batches 171
+        # sys.exit()
 
         pbar = tqdm.tqdm(total=len(loader) * loader.batch_size, bar_format='{percentage:3.0f}% {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]')
         self.model.eval()

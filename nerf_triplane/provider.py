@@ -7,7 +7,9 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 from .network import AudioEncoder
 import trimesh
-
+from .deformation_nw import AudioFeatureDeformationModel
+import sys
+from sklearn.preprocessing import LabelEncoder
 import torch
 from torch.utils.data import DataLoader
 
@@ -99,6 +101,12 @@ class NeRFDataset:
 
         self.training = self.type in ['train', 'all', 'trainval']
         self.num_rays = self.opt.num_rays if self.training else -1
+
+        self.deform_nw = self.build_deform_model(ckpt_path='/home/wenqing/projs/fg_proj/SyncTalk/model/deformation_ave/newset/checkpoints/latest.pth',
+        num_feats=512, T=1)
+        self.label_encoder = LabelEncoder()
+        self.emotions = ['angry', 'disgust', 'contempt', 'fear', 'happy', 'sad', 'surprise', 'neutral']
+        self.label_encoder.fit(self.emotions)
 
         # load nerf-compatible format data.
         
@@ -206,6 +214,7 @@ class NeRFDataset:
                             outputs.append(out)
                         outputs = torch.cat(outputs, dim=0).cpu()
                         first_frame, last_frame = outputs[:1], outputs[-1:]
+                    # 171, 512
                         aud_features = torch.cat([first_frame.repeat(2, 1), outputs, last_frame.repeat(2, 1)], dim=0).numpy()
                     except:
                         print(f'[ERROR] If do not use Audio Visual Encoder, replace it with the npy file path.')
@@ -232,7 +241,7 @@ class NeRFDataset:
 
                 print(f'[INFO] load {self.opt.aud} aud_features: {aud_features.shape}')
             else:
-                aud_features = torch.from_numpy(aud_features)
+                aud_features = torch.from_numpy(aud_features) # aud_features: torch.Size([170, 2, 1024])
 
                 # support both [N, 16] labels and [N, 16, K] logits
                 if len(aud_features.shape) == 3:
@@ -246,8 +255,7 @@ class NeRFDataset:
                     assert self.opt.emb, "aud only provide labels, must use --emb"
                     aud_features = aud_features.long()
 
-                print(f'[INFO] load {self.opt.aud} aud_features: {aud_features.shape}')
-
+                print(f'[INFO] load {self.opt.aud} aud_features: {aud_features.shape}') # ([170, 1024, 2]
         if self.opt.au45:
             import pandas as pd
             au_blink_info = pd.read_csv(os.path.join(self.root_path, 'au.csv'))
@@ -521,6 +529,22 @@ class NeRFDataset:
         else:
             return size - res - 1
 
+    def build_deform_model(self, ckpt_path, num_feats, T):
+        """
+        Build AudioFeatureDeformationModel. The dimension => max_T * n_components.
+        """
+        audio_feature_dim = T * num_feats
+        num_emotions = 8  # or get from dataset label_encoder
+        model = AudioFeatureDeformationModel(
+            audio_feature_dim=audio_feature_dim,
+            num_emotions=num_emotions,
+            emotion_embedding_dim=16,
+            hidden_dim=256
+        ).to(self.device)
+        checkpoint = torch.load(ckpt_path, map_location=self.device)
+
+        model.load_state_dict(checkpoint["model_state_dict"])
+        return model
 
     def collate(self, index):
 
@@ -531,8 +555,23 @@ class NeRFDataset:
 
         # audio use the original index
         if self.auds is not None:
-            auds = get_audio_features(self.auds, self.opt.att, index[0]).to(self.device)
-            results['auds'] = auds
+            # print(f'auds {self.auds.shape}') #171,1,512
+            auds = self.auds
+
+            emo_id_arr = self.label_encoder.transform(['happy'])  # Example emotion
+            # emo_label = torch.tensor(emo_id_arr[0], dtype=torch.long).to('cuda').unsqueeze(0).expand(auds.shape[0])  # Shape: [B]
+            emo_label  = torch.from_numpy(emo_id_arr) #[1]
+
+            deformed_auds = self.deform_nw(auds.view(auds.shape[0], -1).to('cuda'), emo_label, delta_scale=1)  # Shape: [171, 512]
+
+            deformed_auds = deformed_auds.reshape(auds.shape[0], 1, -1)  # 171,1,512
+
+            cond_wins =  get_audio_features(deformed_auds, self.opt.att, index[0]).to(self.device) # 8,1,512
+
+            # print(f'cond_wins {cond_wins.shape}') #171,1,512
+            # sys.exit()
+
+            results['auds'] = cond_wins # ... ave: [8,1,512], hubert: ([8, 1024, 2])
 
         # head pose and bg image may mirror (replay --> <-- --> <--).
         index[0] = self.mirror_index(index[0])

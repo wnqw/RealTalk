@@ -1,0 +1,4 @@
+base_config:
+  - egs/egs_bases/audio_deformation/audio_deformation.yaml
+
+task_cls: tasks.audio_deformation.audio_deformation.AudioDeformationTask

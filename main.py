@@ -1,8 +1,13 @@
 import argparse
 
-from nerf_triplane.provider import NeRFDataset
-from nerf_triplane.utils import *
-from nerf_triplane.network import NeRFNetwork
+from modules.syncnerfs.provider import SyncNeRFDataset
+# from modules.syncnerfs.provider_ori import SyncNeRFDataset
+from modules.syncnerfs.utils import *
+from modules.syncnerfs.syncnerf import SyncNeRF
+from modules.syncnerfs.syncnerf_wo_tri import SyncNeRF_wo_tri
+
+import sys
+from tqdm import tqdm
 
 # torch.autograd.set_detect_anomaly(True)
 # Close tf32 features. Fix low numerical accuracy on rtx30xx gpu.
@@ -74,7 +79,7 @@ if __name__ == '__main__':
     parser.add_argument('--smooth_lips', action='store_true', help="smooth the enc_a in a exponential decay way...")
 
     parser.add_argument('--torso', action='store_true', help="fix head and train torso")
-    parser.add_argument('--head_ckpt', type=str, default='', help="head model")
+    parser.add_argument('--syncnerf_head_ckpt', type=str, default='', help="head model")
 
     ### GUI options
     parser.add_argument('--gui', action='store_true', help="start a GUI")
@@ -117,6 +122,15 @@ if __name__ == '__main__':
     parser.add_argument('-m', type=int, default=50)
     parser.add_argument('-r', type=int, default=10)
 
+    parser.add_argument('--cond_out_dim', type=int, default=64)
+    parser.add_argument('--cond_win_size', type=int, default=1)
+    parser.add_argument('--smo_win_size', type=int, default=3) # 5
+    parser.add_argument('--max_epochs', type=int)
+
+    parser.add_argument('--output_dir', type=str)
+    parser.add_argument('--output_name', type=str)
+
+
     opt = parser.parse_args()
 
     if opt.O:
@@ -145,12 +159,12 @@ if __name__ == '__main__':
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    model = NeRFNetwork(opt)
+    model = SyncNeRF(opt)
 
     # manually load state dict for head
-    if opt.torso and opt.head_ckpt != '':
+    if opt.torso and opt.syncnerf_head_ckpt != '':
         
-        model_dict = torch.load(opt.head_ckpt, map_location='cpu')['model']
+        model_dict = torch.load(opt.syncnerf_head_ckpt, map_location='cpu')['model']
 
         missing_keys, unexpected_keys = model.load_state_dict(model_dict, strict=False)
 
@@ -174,54 +188,49 @@ if __name__ == '__main__':
 
     if opt.test:
         
-        if opt.gui:
-            metrics = [] # use no metric in GUI for faster initialization...
-        else:
-            # metrics = [PSNRMeter(), LPIPSMeter(device=device)]
-            metrics = [PSNRMeter(), LPIPSMeter(device=device), LMDMeter(backend='fan')]
+        metrics = [PSNRMeter(), LPIPSMeter(device=device), LMDMeter(backend='fan')]
 
         trainer = Trainer('ngp', opt, model, device=device, workspace=opt.workspace, criterion=criterion, fp16=opt.fp16, metrics=metrics, use_checkpoint=opt.ckpt)
 
         if opt.test_train:
-            test_set = NeRFDataset(opt, device=device, type='train')
+            test_set = SyncNeRFDataset(opt, device=device, type='train')
             # a manual fix to test on the training dataset
             test_set.training = False 
             test_set.num_rays = -1
             test_loader = test_set.dataloader()
         else:
-            test_loader = NeRFDataset(opt, device=device, type='test').dataloader()
+            test_loader = SyncNeRFDataset(opt, device=device, type='test').dataloader()
 
 
         # temp fix: for update_extra_states
         model.aud_features = test_loader._data.auds
         model.eye_areas = test_loader._data.eye_area
 
-        if opt.gui:
-            from nerf_triplane.gui import NeRFGUI
-            # we still need test_loader to provide audio features for testing.
-            with NeRFGUI(opt, trainer, test_loader) as gui:
-                gui.render()
+        ### test and save video (fast)  
+        trainer.test(test_loader)
+        # trainer.test(test_loader, save_path=opt.output_dir, name=opt.output_name)
 
-        else:
-            ### test and save video (fast)  
-            trainer.test(test_loader)
-
-            ### evaluate metrics (slow)
-            if test_loader.has_gt:
-                trainer.evaluate(test_loader)
-
+        ### evaluate metrics (slow)
+        if test_loader.has_gt:
+            trainer.evaluate(test_loader)
 
 
     else:
 
         optimizer = lambda model: torch.optim.AdamW(model.get_params(opt.lr, opt.lr_net), betas=(0, 0.99), eps=1e-8)
 
-        train_loader = NeRFDataset(opt, device=device, type='train').dataloader()
+        train_loader = SyncNeRFDataset(opt, device=device, type='train').dataloader()
+
+        # for batch_idx, batch in enumerate(tqdm(train_loader, desc="training Batches")):
+        #     print(f"conds: {batch['conds'].shape}") # torch.Size([3, 1, 204])
+        #     print(f'shape: {len(batch)}') # 18
+        #     break
+        # sys.exit()
 
         assert len(train_loader) < opt.ind_num, f"[ERROR] dataset too many frames: {len(train_loader)}, please increase --ind_num to this number!"
 
         # temp fix: for update_extra_states
-        model.aud_features = train_loader._data.auds
+        model.conds = train_loader._data.conds
         model.eye_area = train_loader._data.eye_area
         model.poses = train_loader._data.poses
 
@@ -237,14 +246,12 @@ if __name__ == '__main__':
         trainer = Trainer('ngp', opt, model, device=device, workspace=opt.workspace, optimizer=optimizer, criterion=criterion, ema_decay=0.95, fp16=opt.fp16, lr_scheduler=scheduler, scheduler_update_every_step=True, metrics=metrics, use_checkpoint=opt.ckpt, eval_interval=eval_interval)
         with open(os.path.join(opt.workspace, 'opt.txt'), 'a') as f:
             f.write(str(opt))
-        if opt.gui:
-            with NeRFGUI(opt, trainer, train_loader) as gui:
-                gui.render()
         
-        else:
-            valid_loader = NeRFDataset(opt, device=device, type='val', downscale=1).dataloader()
+            valid_loader = SyncNeRFDataset(opt, device=device, type='val', downscale=1).dataloader()
 
             max_epochs = np.ceil(opt.iters / len(train_loader)).astype(np.int32)
+            if opt.max_epochs:
+                max_epochs = opt.max_epochs
             print(f'[INFO] max_epoch = {max_epochs}')
             trainer.train(train_loader, valid_loader, max_epochs)
 
@@ -253,7 +260,7 @@ if __name__ == '__main__':
             torch.cuda.empty_cache()
 
             # also test
-            test_loader = NeRFDataset(opt, device=device, type='test').dataloader()
+            test_loader = SyncNeRFDataset(opt, device=device, type='test').dataloader()
             
             if test_loader.has_gt:
                 trainer.evaluate(test_loader) # blender has gt, so evaluate it.

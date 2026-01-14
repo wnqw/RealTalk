@@ -734,7 +734,7 @@ class Trainer(object):
         self.device = device if device is not None else torch.device(f'cuda:{local_rank}' if torch.cuda.is_available() else 'cpu')
         self.console = Console()
 
-        self.deform_nw = self.build_deform_model(ckpt_path='/home/wenqing/projs/fg_proj/SyncTalk/model/deformation_ave/newset/checkpoints/latest.pth',
+        self.deform_nw = self.build_deform_model(ckpt_path='./model/deformation_ave/newset/checkpoints/latest.pth',
         num_feats=512, T=1)
         self.label_encoder = LabelEncoder()
         self.emotions = ['angry', 'disgust', 'contempt', 'fear', 'happy', 'sad', 'surprise', 'neutral']

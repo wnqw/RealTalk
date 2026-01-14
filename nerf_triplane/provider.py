@@ -102,7 +102,7 @@ class NeRFDataset:
         self.training = self.type in ['train', 'all', 'trainval']
         self.num_rays = self.opt.num_rays if self.training else -1
 
-        self.deform_nw = self.build_deform_model(ckpt_path='/home/wenqing/projs/fg_proj/SyncTalk/model/deformation_ave/newset/checkpoints/latest.pth',
+        self.deform_nw = self.build_deform_model(ckpt_path='./model/deformation_ave/newset/checkpoints/latest.pth',
         num_feats=512, T=1)
         self.label_encoder = LabelEncoder()
         self.emotions = ['angry', 'disgust', 'contempt', 'fear', 'happy', 'sad', 'surprise', 'neutral']

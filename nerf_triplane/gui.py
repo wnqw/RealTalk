@@ -528,7 +528,7 @@ class NeRFGUI:
             dpg.add_mouse_drag_handler(button=dpg.mvMouseButton_Middle, callback=callback_camera_drag_pan)
 
         
-        dpg.create_viewport(title='SyncTalk', width=1080, height=720, resizable=True)
+        dpg.create_viewport(title='RealTalk', width=1080, height=720, resizable=True)
 
         ### global theme
         with dpg.theme() as theme_no_padding:

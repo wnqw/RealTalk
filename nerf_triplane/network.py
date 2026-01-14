@@ -261,11 +261,6 @@ class NeRFNetwork(NeRFRenderer):
             self.torso_encoder, self.torso_in_dim = get_encoder('tiledgrid', input_dim=2, num_levels=16, level_dim=2, base_resolution=16, log2_hashmap_size=16, desired_resolution=2048)
             self.torso_net = MLP(self.torso_in_dim + self.torso_deform_in_dim + self.anchor_in_dim + self.individual_dim_torso, 4, 32, 3)
 
-        # self.label_encoder = LabelEncoder()
-        # self.emotions = ['angry', 'disgust', 'contempt', 'fear', 'happy', 'sad', 'surprise', 'neutral']
-        # self.label_encoder.fit(self.emotions)
-        # self.deform_nw = self.build_deform_model(ckpt_path='/home/wenqing/projs/fg_proj/SyncTalk/model/deformation_ave/400000epoches/checkpoints/epoch_ckpt_deformation_4996096.pth',
-        # num_feats=512, T=1)
 
     def build_deform_model(self, ckpt_path, num_feats, T):
         """

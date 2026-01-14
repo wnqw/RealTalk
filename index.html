@@ -180,16 +180,32 @@
   </div>
 </section>
 
+
+
+
 <section class="hero is-small">
   <div class="hero-body">
     <div class="container">
-      <h2 class="title is-4 has-text-centered">Video Demo</h2>
-      <video src="static/videos/neutral.mp4" alt="neutral Image" style="display: block; margin: 0 auto; width: 100%;"/>
-      <video src="static/videos/surprise.mp4" alt="surprise Image" style="display: block; margin: 0 auto; width: 100%;"/>
+      <h2 class="title is-3 has-text-centered">Video Demos</h2>
+      <div class="columns is-centered is-multiline">
+        <div class="column is-5">
+          <h2 class="title is-5 has-text-centered">Neutral</h2>
+          <video controls playsinline preload="metadata" style="width: 100%; border-radius: 8px;">
+            <source src="static/videos/neutral.mp4" type="video/mp4" />
+            Your browser does not support the video tag.
+          </video>
+        </div>
+        <div class="column is-5">
+          <h2 class="title is-5 has-text-centered">Surprise</h2>
+          <video controls playsinline preload="metadata" style="width: 100%; border-radius: 8px;">
+            <source src="static/videos/surprise.mp4" type="video/mp4" />
+            Your browser does not support the video tag.
+          </video>
+        </div>
+      </div>
     </div>
   </div>
 </section>
-
 
 <!--BibTex citation -->
   <section class="section" id="BibTeX">
